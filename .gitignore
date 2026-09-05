@@ -8,3 +8,5 @@ dependencies.lock
 *.wav
 *.log
 takes/
+# Python bytecode
+__pycache__/
