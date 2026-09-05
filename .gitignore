@@ -1,0 +1,10 @@
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+.cache/
+dependencies.lock
+# Collected data stays out of the firmware repo (lives with the dataset)
+*.wav
+*.log
+takes/
