@@ -123,22 +123,42 @@ def detect_player():
             continue
     return "none"
 
-def review(clip_path, meta, e, hop_s, player):
-    print(f"\n--- {os.path.basename(clip_path)} ---")
-    print(f"src {meta['src']} @ {meta['t0']:.2f}s  peak@{meta['pk']:.2f}s  "
-          f"prom {meta['prom']:.0f}  clip peak {meta['peak']} rms {meta['rms']:.0f}")
-    print("3 s context (one cell = 50 ms), [ ] = kept 1 s window:")
-    print(contour(e, hop_s, meta['t0'] - 1.0, meta['t0'] + 2.0,
-                  meta['w0'], meta['w1']))
-    print("0.0s         0.5s         1.0s         1.5s         2.0s         2.5s")
-    save_wav(clip_path + ".tmp", meta["audio"])
-    os.replace(clip_path + ".tmp", clip_path)
-    if player != "none":
-        play(clip_path, player)
+NUDGE_S = 0.10  # window slide step for a/d keys
+
+def review(clip_path, meta, e, hop_s, player, full, take_dur):
+    # Interactive verdict with re-positioning: [a]/[d] slide the 1 s window
+    # ∓100 ms (repeatable), re-rendering + replaying each time. Returns
+    # (verdict, used_merge) where verdict is y/n/s/q/m (m = merge with next).
+    w0, w1 = meta["w0"], meta["w1"]
+    win = w1 - w0  # constant 1 s window; nudges slide it rigidly
     while True:
-        r = input("[y]eep wake / [n]o drop / [s]ilence / [q]uit? ").strip().lower()
-        if r in ("y", "n", "s", "q"):
+        meta["w0"], meta["w1"] = w0, w1
+        meta["t0"] = round(w0, 2)
+        audio = full[int(w0 * SR):int(w1 * SR)]
+        meta["audio"] = audio
+        meta["peak"] = int(np.abs(audio).max())
+        meta["rms"] = float(np.sqrt((audio ** 2).mean()))
+        print(f"\n--- {os.path.basename(clip_path)} ---")
+        print(f"src {meta['src']} @ {w0:.2f}s  peak@{meta['pk']:.2f}s  "
+              f"prom {meta['prom']:.0f}  clip peak {meta['peak']} rms {meta['rms']:.0f}")
+        print("3 s context (one cell = 50 ms), [ ] = kept 1 s window:")
+        print(contour(e, hop_s, w0 - 1.0, w0 + 2.0, w0, w1))
+        print("0.0s         0.5s         1.0s         1.5s         2.0s         2.5s")
+        save_wav(clip_path + ".tmp", audio)
+        os.replace(clip_path + ".tmp", clip_path)
+        if player != "none":
+            play(clip_path, player)
+        r = input("[y]eep / [n]o / [s]ilence / [a]back 100ms / [d]fwd 100ms / "
+                  "[m]erge next / [q]uit? ").strip().lower()
+        if r == "a":
+            w0 = max(0.0, w0 - NUDGE_S); w1 = w0 + win
+            continue
+        if r == "d":
+            w1 = min(take_dur, w1 + NUDGE_S); w0 = w1 - win
+            continue
+        if r in ("y", "n", "s", "q", "m"):
             return r
+        print("unknown key")
 
 # ---------------------------------------------------------------- main
 
@@ -226,39 +246,73 @@ def main():
                       f"(+{n_bump} noise bumps auto-dropped, "
                       f"+{n_overlap} overlaps lost to stronger peaks)")
                 used = []  # kept 1 s windows (avoid overlap + silence clash)
+                skip, ci, take_dur = set(), 0, len(s) / SR
                 for bi, (pr, cen, w0, w1, pi) in enumerate(accepted):
-                    audio = s[int(w0 * SR):int(w1 * SR)]
-                    name = (f"{speaker}_{room}_{dist}_"
-                            f"{os.path.basename(wav)[:-4]}_c{bi + 1:02d}.wav")
-                    meta = {"src": tag, "t0": round(w0, 2),
-                            "dur": round(2 * (cen - w0), 2),
-                            "peak": int(np.abs(audio).max()),
-                            "rms": float(np.sqrt((audio ** 2).mean())),
-                            "w0": w0, "w1": w1, "audio": audio,
-                            "pk": round(cen, 2), "prom": round(pr)}
-                    if a.auto:
-                        r = "y"
-                        os.makedirs(f"{a.outdir}/wake", exist_ok=True)
-                        save_wav(f"{a.outdir}/wake/{name}", audio)
-                    else:
+                    if bi in skip:
+                        print(f"  candidate {bi + 1}: merged into previous, skipped")
+                        continue
+                    cur = [pr, cen, w0, w1, pi]
+                    merged_flag = False
+                    while True:
+                        pr_, cen_, w0_, w1_, pi_ = cur
+                        ci += 1
+                        audio = s[int(w0_ * SR):int(w1_ * SR)]
+                        name = (f"{speaker}_{room}_{dist}_"
+                                f"{os.path.basename(wav)[:-4]}_c{ci:02d}.wav")
+                        meta = {"src": tag, "t0": round(w0_, 2),
+                                "dur": round(2 * (cen_ - w0_), 2),
+                                "peak": int(np.abs(audio).max()),
+                                "rms": float(np.sqrt((audio ** 2).mean())),
+                                "w0": w0_, "w1": w1_, "audio": audio,
+                                "pk": round(cen_, 2), "prom": round(pr_)}
+                        if a.auto:
+                            r = "y"
+                            os.makedirs(f"{a.outdir}/wake", exist_ok=True)
+                            save_wav(f"{a.outdir}/wake/{name}", audio)
+                            break
                         os.makedirs(f"{a.outdir}/wake", exist_ok=True)
                         tmp = f"{a.outdir}/wake/{name}"
-                        r = review(tmp, meta, e, hop_s, player)
-                        if r == "q":
+                        r = review(tmp, meta, e, hop_s, player, s, take_dur)
+                        if r != "m":
+                            break
+                        if bi + 1 >= len(accepted) or (bi + 1) in skip:
+                            print("  nothing to merge with (last candidate)")
                             if os.path.exists(tmp):
                                 os.remove(tmp)
-                            print("quit."); man.close(); summary(n_wake, n_sil, n_drop); return
-                        if r == "n":
-                            os.remove(tmp); n_drop += 1; continue
-                        if r == "s":
+                            ci -= 1
+                            continue
+                        npr, ncen, _nw0, _nw1, _npi = accepted[bi + 1]
+                        mid = (cen_ + ncen) / 2
+                        w0_ = min(max(mid - a.win_s / 2, 0), take_dur - a.win_s)
+                        skip.add(bi + 1)
+                        merged_flag = True
+                        print(f"  merged with candidate {bi + 2}; "
+                              f"re-reviewing joint window")
+                        if os.path.exists(tmp):
+                            os.remove(tmp)
+                        ci -= 1
+                        cur = [max(pr_, npr), mid, w0_, w0_ + a.win_s, pi_]
+                    if r == "q":
+                        if not a.auto and os.path.exists(tmp):
+                            os.remove(tmp)
+                        print("quit."); man.close(); summary(n_wake, n_sil, n_drop); return
+                    if r == "n":
+                        if not a.auto and os.path.exists(tmp):
+                            os.remove(tmp)
+                        ci -= 1  # dropped clips leave no numbering gaps
+                        n_drop += 1; continue
+                    if r == "s":
+                        if not a.auto:
                             os.makedirs(f"{a.outdir}/silence", exist_ok=True)
                             os.replace(tmp, f"{a.outdir}/silence/{name}")
                     label = "wake" if r == "y" else "silence"
+                    tag3 = ("auto" if a.auto else
+                            ("human-merge" if merged_flag else "human"))
                     writer.writerow([name, tag, meta["t0"], speaker, room,
                                      dist, label, meta["peak"],
-                                     round(meta["rms"]), "auto" if a.auto else "human"])
+                                     round(meta["rms"]), tag3])
                     man.flush()
-                    used.append((w0, w1))
+                    used.append((meta["w0"], meta["w1"]))
                     if r == "y":
                         n_wake += 1
                     else:

@@ -56,15 +56,20 @@ Adaptive per-take VAD finds utterance peaks (smoothed energy maxima >=700 ms
 apart, so one "Jago Guru" = one peak even with its internal word gap, while
 3 s-spaced utterances split even in noisy rooms where old burst-merging glued
 takes together); each peak becomes a 1 s window. Up-to-3 auto silence clips
-per take. You review wake candidates one keystroke each (`y` keep / `n` drop
-/ `s` file as silence / `q` quit) with an energy contour, time ruler, and
-playback (`--no-play` to skip audio, `--auto` to accept all, `--resume` to
-continue, `--take 'sp01*'` for a subset). Output: `data/wake/`,
-`data/silence/`, `data/manifest.csv` (`quite`→`quiet` normalized in clip
-names; source take kept per row). Tune with `--enter-mult` (peak height),
-`--min-sep-ms` (utterance spacing), `--min-prom` (noise-bump rejection) and
-`--top-k` (cap candidates per take). Overlaps resolve to the stronger peak;
-silence falls back to a looser margin (`auto-sil-loose`) in dense takes.
+per take. You review wake candidates one keystroke each: `y` keep, `n` drop,
+`s` file as silence, `a`/`d` slide the 1 s window ∓100 ms and re-listen
+(repeatable — fixes silence clips catching a wake-word tail, or off-center
+windows), `m` merge with the next candidate (for speakers pausing long
+between "Jago" and "Guru" — joint window is re-reviewed, tagged
+`human-merge`), `q` quit. Each candidate shows an energy contour, time
+ruler, and plays back (`--no-play` to skip audio, `--auto` to accept all,
+`--resume` to continue, `--take 'sp01*'` for a subset). Output:
+`data/wake/`, `data/silence/`, `data/manifest.csv` (`quite`→`quiet`
+normalized in clip names; source take kept per row). Tune with
+`--enter-mult` (peak height), `--min-sep-ms` (utterance spacing),
+`--min-prom` (noise-bump rejection) and `--top-k` (cap candidates per
+take). Overlaps resolve to the stronger peak; silence falls back to a
+looser margin (`auto-sil-loose`) in dense takes.
 
 ## Session protocol (per speaker)
 
