@@ -8,5 +8,9 @@ dependencies.lock
 *.wav
 *.log
 takes/
+# Large generated artifacts (rebuilt via scripts/; data/manifest.csv IS kept)
+ext/
+features/
+edgewake-v1/
 # Python bytecode
 __pycache__/
