@@ -54,35 +54,37 @@ def frame_rms(s, frame=480, hop=160):
         out[i] = np.sqrt((seg ** 2).mean())
     return out
 
-def find_bursts(e, hop_s, a):
-    floor = float(np.percentile(e, 10))
-    enter = max(a.abs_min_enter, a.enter_mult * floor)
-    exit = max(a.abs_min_exit, a.exit_mult * floor)
-    hang = int(round(0.30 / hop_s))
-    merge = int(round(a.merge_gap_ms / 1000 / hop_s))
-    minlen = int(round(a.min_burst_ms / 1000 / hop_s))
-    state, below, bursts, start = False, 0, [], 0
-    for i, v in enumerate(e):
-        if not state:
-            if v >= enter:
-                state, start, below = True, i, 0
-        elif v < exit and (below := below + 1) >= hang:
-            state = False
-            bursts.append((start, i - hang))
-    if state:
-        bursts.append((start, len(e) - 1))
-    # merge across word gaps ("Ja-go ... Gu-ru"), drop blips
-    merged = []
-    for b in bursts:
-        if merged and b[0] - merged[-1][1] <= merge:
-            merged[-1] = (merged[-1][0], b[1])
-        else:
-            merged.append(b)
-    info = {"floor": floor, "enter": enter, "exit": exit}
-    return [(s0 * hop_s, (s1 + 1) * hop_s) for s0, s1 in merged
-            if s1 + 1 - s0 >= minlen], info
+# ---------------------------------------------------------------- peaks
+# Peak-picked candidates (robust in noise): smooth the energy, take local
+# maxima above the enter threshold with >=700 ms separation (syllables of one
+# "Jago Guru" are ~150-250 ms apart and merge; utterances are ~3 s apart and
+# split). One 1 s window per peak. This replaces burst-merge logic, which
+# glued whole takes together in noisy rooms (exit thr below noise floor).
 
-# ---------------------------------------------------------------- review UI
+def find_peaks(e, hop_s, enter, min_sep_s=0.7, smooth_s=0.15):
+    w = max(1, int(round(smooth_s / hop_s)))
+    sm = np.convolve(e, np.ones(w) / w, mode="same")
+    loc = [i for i in range(1, len(sm) - 1)
+           if sm[i] >= enter and sm[i] >= sm[i - 1] and sm[i] > sm[i + 1]]
+    loc.sort(key=lambda i: sm[i], reverse=True)
+    kept = []
+    for i in loc:
+        if all(abs(i - j) * hop_s >= min_sep_s for j in kept):
+            kept.append(i)
+    kept.sort()
+    return kept, sm
+
+def prominence(sm, hop_s, i, half_s=1.5, guard_s=0.2):
+    # Peak height above local background (median of surroundings, excluding
+    # the peak's own neighbourhood). Loud horns score high too - the human
+    # review drops those; this only removes flat noise bumps.
+    w = int(round(half_s / hop_s))
+    g = int(round(guard_s / hop_s))
+    lo, hi = max(0, i - w), min(len(sm), i + w + 1)
+    left = sm[lo:max(i - g, lo)]
+    right = sm[min(i + g + 1, hi):hi]
+    bg = np.median(np.concatenate([left, right])) if left.size + right.size else np.median(sm[lo:hi])
+    return float(sm[i] - bg)
 
 def contour(e, hop_s, t0, t1, w0=None, w1=None, width=60):
     i0, i1 = max(0, int(t0 / hop_s)), min(len(e), int(t1 / hop_s))
@@ -123,11 +125,12 @@ def detect_player():
 
 def review(clip_path, meta, e, hop_s, player):
     print(f"\n--- {os.path.basename(clip_path)} ---")
-    print(f"src {meta['src']} @ {meta['t0']:.2f}s  burst {meta['dur']:.2f}s  "
-          f"peak {meta['peak']} rms {meta['rms']:.0f}")
-    print("2 s context, [ ] = kept 1 s window:")
-    print(contour(e, hop_s, meta['t0'] - 0.5, meta['t0'] + 1.5,
+    print(f"src {meta['src']} @ {meta['t0']:.2f}s  peak@{meta['pk']:.2f}s  "
+          f"prom {meta['prom']:.0f}  clip peak {meta['peak']} rms {meta['rms']:.0f}")
+    print("3 s context (one cell = 50 ms), [ ] = kept 1 s window:")
+    print(contour(e, hop_s, meta['t0'] - 1.0, meta['t0'] + 2.0,
                   meta['w0'], meta['w1']))
+    print("0.0s         0.5s         1.0s         1.5s         2.0s         2.5s")
     save_wav(clip_path + ".tmp", meta["audio"])
     os.replace(clip_path + ".tmp", clip_path)
     if player != "none":
@@ -145,11 +148,13 @@ def main():
     ap.add_argument("--outdir", default="data")
     ap.add_argument("--take", default="*", help="glob on session dir")
     ap.add_argument("--enter-mult", type=float, default=2.2)
-    ap.add_argument("--exit-mult", type=float, default=1.5)
     ap.add_argument("--abs-min-enter", type=float, default=2500)
-    ap.add_argument("--abs-min-exit", type=float, default=1200)
-    ap.add_argument("--merge-gap-ms", type=float, default=500)
-    ap.add_argument("--min-burst-ms", type=float, default=250)
+    ap.add_argument("--min-sep-ms", type=float, default=700,
+                    help="min separation between utterance peaks")
+    ap.add_argument("--min-prom", type=float, default=1500,
+                    help="drop peaks standing out less than this (noise bumps)")
+    ap.add_argument("--top-k", type=int, default=0,
+                    help="per take, review only the K most prominent peaks (0=all)")
     ap.add_argument("--win-s", type=float, default=1.0)
     ap.add_argument("--silence-per-take", type=int, default=3)
     ap.add_argument("--no-play", action="store_true")
@@ -190,28 +195,47 @@ def main():
                 s = load_wav(wav)
                 e = frame_rms(s)
                 hop_s = 160 / SR
-                bursts, info = find_bursts(e, hop_s, a)
-                print(f"\n== {tag}: floor={info['floor']:.0f} "
-                      f"thr={info['enter']:.0f}/{info['exit']:.0f} "
-                      f"bursts={len(bursts)}")
-                used = []  # kept 1 s windows (avoid overlap + silence clash)
-                for bi, (b0, b1) in enumerate(bursts):
-                    seg = e[int(b0 / hop_s):max(int(b1 / hop_s), int(b0 / hop_s) + 1)]
-                    cen = (b0 + np.average(
-                        np.arange(len(seg)), weights=seg + 1e-9) * hop_s
-                        if len(seg) else (b0 + b1) / 2)
+                floor = float(np.percentile(e, 10))
+                enter = max(a.abs_min_enter, a.enter_mult * floor)
+                peaks, _sm = find_peaks(e, hop_s, enter,
+                                         min_sep_s=a.min_sep_ms / 1000)
+                # Acceptance: most prominent first, so when two candidate
+                # windows overlap (syllable split / dense speech) the
+                # stronger peak wins instead of whichever came first.
+                scored = [(pi, prominence(_sm, hop_s, pi)) for pi in peaks]
+                n_bump = sum(1 for _, pr in scored if pr < a.min_prom)
+                cands = []
+                for pi, pr in scored:
+                    if pr < a.min_prom:
+                        continue
+                    cen = pi * hop_s
                     w0 = min(max(cen - a.win_s / 2, 0), len(s) / SR - a.win_s)
-                    w1 = w0 + a.win_s
-                    if any(not (w1 <= u0 or w0 >= u1) for u0, u1 in used):
-                        print(f"  burst {bi}: overlaps kept window, skipped"); continue
+                    cands.append((pr, cen, w0, w0 + a.win_s, pi))
+                if a.top_k > 0:
+                    cands = sorted(cands, reverse=True)[:a.top_k]
+                accepted, n_overlap = [], 0
+                for pr, cen, w0, w1, pi in sorted(cands, reverse=True):
+                    if any(not (w1 <= u0 or w0 >= u1) for _, _, u0, u1, _
+                           in accepted):
+                        n_overlap += 1
+                        continue
+                    accepted.append((pr, cen, w0, w1, pi))
+                accepted.sort(key=lambda c: c[2])  # review in time order
+                print(f"\n== {tag}: floor={floor:.0f} "
+                      f"thr={enter:.0f} peaks={len(peaks)} "
+                      f"(+{n_bump} noise bumps auto-dropped, "
+                      f"+{n_overlap} overlaps lost to stronger peaks)")
+                used = []  # kept 1 s windows (avoid overlap + silence clash)
+                for bi, (pr, cen, w0, w1, pi) in enumerate(accepted):
                     audio = s[int(w0 * SR):int(w1 * SR)]
                     name = (f"{speaker}_{room}_{dist}_"
                             f"{os.path.basename(wav)[:-4]}_c{bi + 1:02d}.wav")
                     meta = {"src": tag, "t0": round(w0, 2),
-                            "dur": round(b1 - b0, 2),
+                            "dur": round(2 * (cen - w0), 2),
                             "peak": int(np.abs(audio).max()),
                             "rms": float(np.sqrt((audio ** 2).mean())),
-                            "w0": w0, "w1": w1, "audio": audio}
+                            "w0": w0, "w1": w1, "audio": audio,
+                            "pk": round(cen, 2), "prom": round(pr)}
                     if a.auto:
                         r = "y"
                         os.makedirs(f"{a.outdir}/wake", exist_ok=True)
@@ -239,17 +263,31 @@ def main():
                         n_wake += 1
                     else:
                         n_sil += 1
-                # silence: quietest 1 s grid windows clear of wake windows
-                sils = []
-                t = 0.0
-                while t + a.win_s <= len(s) / SR:
-                    if all(t + a.win_s <= u0 - 0.5 or t >= u1 + 0.5 for u0, u1 in used):
-                        seg = e[int(t / hop_s):int((t + a.win_s) / hop_s)]
-                        sils.append((seg.max() if len(seg) else 1e18, t))
-                    t += 0.5
+                # silence: quietest 1 s grid windows clear of wake windows.
+                # Two passes: strict 0.5 s margin first, then relaxed 0.1 s
+                # (dense takes have no wide gaps; flagged auto-sil-loose).
+                sils, seen = [], set()
+                for margin, tag2 in ((0.5, "auto-sil"), (0.1, "auto-sil-loose")):
+                    cands = []
+                    t = 0.0
+                    while t + a.win_s <= len(s) / SR:
+                        if (round(t, 2) not in seen and
+                            all(t + a.win_s <= u0 - margin or t >= u1 + margin
+                                for u0, u1 in used)):
+                            seg = e[int(t / hop_s):int((t + a.win_s) / hop_s)]
+                            cands.append((seg.max() if len(seg) else 1e18, t))
+                        t += 0.5
+                    cands.sort()
+                    for vmax, tt in cands:
+                        if len(sils) >= a.silence_per_take:
+                            break
+                        sils.append((vmax, tt, tag2))
+                        seen.add(round(tt, 2))
+                    if len(sils) >= a.silence_per_take:
+                        break
                 sils.sort()
                 os.makedirs(f"{a.outdir}/silence", exist_ok=True)
-                for k, (_, t0_) in enumerate(sils[:a.silence_per_take]):
+                for k, (_, t0_, tag2) in enumerate(sils[:a.silence_per_take]):
                     audio = s[int(t0_ * SR):int((t0_ + a.win_s) * SR)]
                     name = (f"{speaker}_{room}_{dist}_"
                             f"{os.path.basename(wav)[:-4]}_sil{k + 1}.wav")
@@ -258,7 +296,7 @@ def main():
                                      dist, "silence",
                                      int(np.abs(audio).max()),
                                      round(float(np.sqrt((audio ** 2).mean())), 1),
-                                     "auto-sil"])
+                                     tag2])
                     man.flush()
                     n_sil += 1
     finally:

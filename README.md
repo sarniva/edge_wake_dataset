@@ -52,16 +52,19 @@ Tip: keep takes short of phone-log limits; one log file per speaker/room.
 python scripts/clip_cutter.py --takes-dir takes --outdir data
 ```
 
-Adaptive per-take VAD finds speech bursts (word-gap merge handles the
-"Jago... Guru" pause); each burst becomes a 1 s candidate centered on its
-energy centroid, plus up-to-3 auto silence clips per take. You review wake
-candidates one keystroke each (`y` keep / `n` drop / `s` file as silence /
-`q` quit) with an energy contour and playback (`--no-play` to skip audio,
-`--auto` to accept all, `--resume` to continue, `--take 'sp01*'` for a
-subset). Output: `data/wake/`, `data/silence/`, `data/manifest.csv`
-(`quite`→`quiet` normalized in clip names; source take kept per row).
-Tune with `--enter-mult/--exit-mult/--merge-gap-ms` if bursts over-split
-(word gap) or neighbours merge (fast speakers).
+Adaptive per-take VAD finds utterance peaks (smoothed energy maxima >=700 ms
+apart, so one "Jago Guru" = one peak even with its internal word gap, while
+3 s-spaced utterances split even in noisy rooms where old burst-merging glued
+takes together); each peak becomes a 1 s window. Up-to-3 auto silence clips
+per take. You review wake candidates one keystroke each (`y` keep / `n` drop
+/ `s` file as silence / `q` quit) with an energy contour, time ruler, and
+playback (`--no-play` to skip audio, `--auto` to accept all, `--resume` to
+continue, `--take 'sp01*'` for a subset). Output: `data/wake/`,
+`data/silence/`, `data/manifest.csv` (`quite`→`quiet` normalized in clip
+names; source take kept per row). Tune with `--enter-mult` (peak height),
+`--min-sep-ms` (utterance spacing), `--min-prom` (noise-bump rejection) and
+`--top-k` (cap candidates per take). Overlaps resolve to the stronger peak;
+silence falls back to a looser margin (`auto-sil-loose`) in dense takes.
 
 ## Session protocol (per speaker)
 
