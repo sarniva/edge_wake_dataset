@@ -149,7 +149,9 @@ def review(clip_path, meta, e, hop_s, player, full, take_dur):
         if player != "none":
             play(clip_path, player)
         r = input("[y]eep / [n]o / [s]ilence / [a]back 100ms / [d]fwd 100ms / "
-                  "[m]erge next / [q]uit? ").strip().lower()
+                  "[p]lay again / [m]erge next / [q]uit? ").strip().lower()
+        if r == "p":
+            continue  # loop re-renders the contour and replays the clip
         if r == "a":
             w0 = max(0.0, w0 - NUDGE_S); w1 = w0 + win
             continue
