@@ -46,6 +46,23 @@ completes (`TAKE_END`)** — presses during recording/dumping are ignored
 
 Tip: keep takes short of phone-log limits; one log file per speaker/room.
 
+## Clip cutting (takes -> labeled 1 s clips)
+
+```bash
+python scripts/clip_cutter.py --takes-dir takes --outdir data
+```
+
+Adaptive per-take VAD finds speech bursts (word-gap merge handles the
+"Jago... Guru" pause); each burst becomes a 1 s candidate centered on its
+energy centroid, plus up-to-3 auto silence clips per take. You review wake
+candidates one keystroke each (`y` keep / `n` drop / `s` file as silence /
+`q` quit) with an energy contour and playback (`--no-play` to skip audio,
+`--auto` to accept all, `--resume` to continue, `--take 'sp01*'` for a
+subset). Output: `data/wake/`, `data/silence/`, `data/manifest.csv`
+(`quite`→`quiet` normalized in clip names; source take kept per row).
+Tune with `--enter-mult/--exit-mult/--merge-gap-ms` if bursts over-split
+(word gap) or neighbours merge (fast speakers).
+
 ## Session protocol (per speaker)
 
 - Distances: 30 cm, 1 m, 3 m — one take each, per room.
