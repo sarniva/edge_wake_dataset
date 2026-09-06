@@ -57,7 +57,7 @@ apart, so one "Jago Guru" = one peak even with its internal word gap, while
 3 s-spaced utterances split even in noisy rooms where old burst-merging glued
 takes together); each peak becomes a 1 s window. Up-to-3 auto silence clips
 per take. You review wake candidates one keystroke each: `y` keep, `n` drop,
-`s` file as silence, `a`/`d` slide the 1 s window ∓100 ms and re-listen
+`s` file as silence, `p` hear the clip again, `a`/`d` slide the 1 s window ∓100 ms and re-listen
 (repeatable — fixes silence clips catching a wake-word tail, or off-center
 windows), `m` merge with the next candidate (for speakers pausing long
 between "Jago" and "Guru" — joint window is re-reviewed, tagged
